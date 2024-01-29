@@ -46,6 +46,7 @@ class Proxy(Startable):
                 client_handler = threading.Thread(target=forward_data, args=(src_socket, ssock, False, self.quiet, self.verbose, self.target_domain))
                 client_handler.start()
 
+
 def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_proxy: bool, quiet: bool, verbose: bool, domain: str = ""):
     with src_socket, dest_socket:
         src_socket.setblocking(False)

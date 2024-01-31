@@ -3,7 +3,6 @@ from subprocess import check_call, DEVNULL, STDOUT
 
 from dnslib import DNSRecord, DNSHeader, QTYPE, RR, A
 
-import proxy
 import translating_server
 from utils import Startable, Colors
 
@@ -34,15 +33,11 @@ class DNSServer(Startable):
                     if self.verbose:
                         print(f"[{Colors.CYAN}*{Colors.END}] Received {Colors.GREEN}DNS{Colors.END} request from {addr} for {Colors.GREEN}{target_domain}{Colors.END}")
 
-                    if target_domain not in self.translator.domains_to_ports:
+                    if target_domain not in self.translator.domains_to_certs:
                         org = '.'.join(target_domain.split('.')[-2:-1]).capitalize()
                         check_call(['./gen_cert.sh', target_domain, org], stdout=DEVNULL, stderr=STDOUT)
 
                         self.translator.domains_to_certs[target_domain] = (f'./certs/{target_domain}_chain.pem', f'./certs/{target_domain}.key')
-
-                        new_proxy = proxy.Proxy(target_domain, self.quiet, self.verbose)
-                        self.translator.domains_to_ports[target_domain] = new_proxy.proxy_port
-                        new_proxy.start()
 
                     dns_response = DNSRecord(
                         DNSHeader(id=dns_request.header.id, qr=1, aa=1, ra=1),

@@ -1,29 +1,37 @@
+import errno
 import socket
 import threading
+import time
 from typing import Tuple, Dict
 
-import proxy as proxy
 from utils import Startable, Colors
 
+from dns import resolver
 import ssl
 
 class TranslatingServer(Startable):
-    def __init__(self, listening_port: int, use_tls: bool, quiet: bool, verbose: bool):
-        super().__init__(self.handle_translations, use_tls)
+    # TODO: enum with different possible ports (80 and 443 for now)
+
+    def __init__(self, listening_port: int, quiet: bool, verbose: bool):
+        super().__init__(self.handle_translations)
         self.port = listening_port
-        self.domains_to_ports: Dict[str, int] = {}
         self.domains_to_certs: Dict[str, Tuple[str, str]] = {}
-        self.connection_to_port: Dict[socket.socket, int] = {}
+        self.connection_to_domain: Dict[socket.socket, str] = {}
 
         self.translating_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.translating_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.translating_socket.bind(("0.0.0.0", self.port))
         self.translating_socket.listen(100)
 
-        if use_tls:
-            self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            self.context.sni_callback = self.sni_callback
-            self.translating_socket = self.context.wrap_socket(self.translating_socket, server_side=True)
+        if self.port == 443:
+            self.server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.server_context.sni_callback = self.sni_callback
+            self.translating_socket = self.server_context.wrap_socket(self.translating_socket, server_side=True)
+            self.client_context = ssl.create_default_context()
+
+        self.res = resolver.Resolver()
+        self.res.cache = resolver.Cache()
+        self.res.nameservers = ['8.8.8.8']  # TODO: remove after local testing
 
         self.quiet = quiet
         self.verbose = verbose
@@ -31,13 +39,13 @@ class TranslatingServer(Startable):
     def sni_callback(self, ssl_socket: ssl.SSLSocket, sni_name: str, ssl_context: ssl.SSLContext) -> None:
         new_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 
-        self.connection_to_port[ssl_socket] = self.domains_to_ports[sni_name]
+        self.connection_to_domain[ssl_socket] = sni_name
         certfile, keyfile = self.domains_to_certs[sni_name]
         new_context.load_cert_chain(certfile, keyfile)
         ssl_socket.context = new_context
         return None
 
-    def handle_translations(self, use_tls: bool):
+    def handle_translations(self):
         if self.verbose:
             print(f"[{Colors.CYAN}*{Colors.END}] Accepting requests on port {self.port}")
         try:
@@ -48,21 +56,77 @@ class TranslatingServer(Startable):
                     if self.verbose:
                         print(f'Connection on port {self.port} from {client_address}')
 
-                    dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    dest_socket.connect(('127.0.0.1', self.connection_to_port[client_socket]))
-                    # TODO: find a way to get the correct port when plain HTTP
-                    self.connection_to_port.pop(client_socket, None)
+                    if self.port == 443:
+                        target_domain = self.connection_to_domain.pop(client_socket)
+                        dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        dest_socket.connect((self.res.resolve(target_domain)[0].address, 443))
+                        dest_socket = self.client_context.wrap_socket(dest_socket, server_hostname=target_domain)
+                    elif self.port == 80:
+                        # TODO: find a way to get the correct port when plain HTTP
+                        raise "HTTP port not yet implemented"
+                    else:
+                        raise "Proxy port not yet implemented"
 
-                    client_handler = threading.Thread(target=proxy.forward_data, args=(client_socket, dest_socket, True,
-                                                                                       self.quiet, self.verbose))
+                    client_handler = threading.Thread(target=forward_data, args=(client_socket, dest_socket, self.quiet, self.verbose, target_domain))
                     client_handler.start()
         except socket.error as e:
             print(f"{Colors.FAIL}{e}{Colors.END}")
-            print(f"Restarting relay")
+            print(f"Restarting relay {self.port}")
             self.translating_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.translating_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.translating_socket.bind(("0.0.0.0", self.port))
             self.translating_socket.listen(100)
-            if use_tls:
-                self.translating_socket = self.context.wrap_socket(self.translating_socket, server_side=True)
-            self.handle_translations(use_tls)
+            if self.port == 443:
+                self.translating_socket = self.server_context.wrap_socket(self.translating_socket, server_side=True)
+            self.handle_translations()
+
+def forward_data(src_socket: socket.socket, dest_socket: socket.socket, quiet: bool, verbose: bool, domain: str = ""):
+    with src_socket, dest_socket:
+        src_socket.setblocking(False)
+        dest_socket.setblocking(False)
+
+        src = src_socket.getpeername()
+        if not quiet:
+            print(f"{Colors.BOLD}{Colors.GREEN}************** {src} >>> {domain} opened **************{Colors.END}\n")
+
+        st = time.time()
+        timeout = False
+        color = Colors.GREEN
+        arrows = ">>>"
+        while not timeout:
+            try:
+                while True:
+                    try:
+                        data = src_socket.recv(4096)
+                        if len(data) > 0:
+                            st = time.time()
+
+                            if not quiet:
+                                print(f"{color}{arrows} [{domain}]: {Colors.END}", end="")
+                                print(data)
+
+                            dest_socket.send(data)
+                        else:
+                            if time.time() - st > 5:
+                                timeout = True
+                            break
+                    except socket.error as e:
+                        if e.errno == errno.EAGAIN or e.errno == errno.ENOENT:
+                            if time.time() - st > 5:
+                                timeout = True
+                            break
+                        raise e
+
+                tmp = src_socket
+                src_socket = dest_socket
+                dest_socket = tmp
+                color = Colors.GREEN if color == Colors.BLUE else Colors.BLUE
+                arrows = "<<<" if arrows == ">>>" else ">>>"
+
+            except socket.error as e:
+                print(f"{Colors.FAIL}{e}{Colors.END}")
+                print(f"{e.errno}")
+                break
+
+        if not quiet:
+            print(f"{Colors.BOLD}{Colors.FAIL}************** {src} >>> {domain} closed **************{Colors.END}\n")

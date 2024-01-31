@@ -16,13 +16,11 @@ class Proxy(Startable):
         self.res.cache = resolver.Cache()
         self.res.nameservers = ['8.8.8.8']  # TODO: remove after local testing
 
-        proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        proxy.bind(('127.0.0.1', 0))
-        proxy.listen(100)
-
+        self.proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.proxy.bind(('127.0.0.1', 0))
+        self.proxy.listen(100)
+        self.proxy_port = self.proxy.getsockname()[1]
         self.target_domain = target_domain
-        self.proxy = proxy
-        self.proxy_port = proxy.getsockname()[1]
 
         self.quiet = quiet
         self.verbose = verbose
@@ -67,7 +65,7 @@ def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_pro
             try:
                 while True:
                     try:
-                        data = src_socket.recv(1024)
+                        data = src_socket.recv(4096)
                         if len(data) > 0:
                             st = time.time()
 
@@ -77,12 +75,12 @@ def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_pro
 
                             dest_socket.send(data)
                         else:
-                            if time.time() - st > 1:
+                            if time.time() - st > 5:
                                 timeout = True
                             break
                     except socket.error as e:
                         if e.errno == errno.EAGAIN or e.errno == errno.ENOENT:
-                            if time.time() - st > 1:
+                            if time.time() - st > 5:
                                 timeout = True
                             break
                         raise e

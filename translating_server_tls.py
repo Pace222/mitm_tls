@@ -40,17 +40,26 @@ class TranslatingServer(Startable):
     def handle_translations(self):
         if self.verbose:
             print(f"[{Colors.CYAN}*{Colors.END}] Accepting requests on port {self.port}")
-        with self.context.wrap_socket(self.translating_socket, server_side=True) as ssock:
-            while True:
-                client_socket, client_address = ssock.accept()
+        try:
+            with self.context.wrap_socket(self.translating_socket, server_side=True) as ssock:
+                while True:
+                    client_socket, client_address = ssock.accept()
 
-                if self.verbose:
-                    print(f'Connection on port {self.port} from {client_address}')
+                    if self.verbose:
+                        print(f'Connection on port {self.port} from {client_address}')
 
-                dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                dest_socket.connect(('127.0.0.1', self.connection_to_port[client_socket]))
-                self.connection_to_port.pop(client_socket, None)
+                    dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    dest_socket.connect(('127.0.0.1', self.connection_to_port[client_socket]))
+                    self.connection_to_port.pop(client_socket, None)
 
-                client_handler = threading.Thread(target=proxy.forward_data, args=(client_socket, dest_socket, True,
-                                                                                   self.quiet, self.verbose))
-                client_handler.start()
+                    client_handler = threading.Thread(target=proxy.forward_data, args=(client_socket, dest_socket, True,
+                                                                                       self.quiet, self.verbose))
+                    client_handler.start()
+        except socket.error as e:
+            print(f"{Colors.FAIL}{e}{Colors.END}")
+            print(f"Restarting relay")
+            self.translating_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.translating_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.translating_socket.bind(("0.0.0.0", self.port))
+            self.translating_socket.listen(100)
+            self.handle_translations()

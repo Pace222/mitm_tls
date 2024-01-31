@@ -31,19 +31,26 @@ class Proxy(Startable):
         if self.verbose:
             print(f'[{Colors.CYAN}*{Colors.END}] {Colors.CYAN}Proxy started{Colors.END} for {Colors.GREEN}{self.target_domain}{Colors.END} listening on port {self.proxy_port}...')
 
-        with self.proxy:
-            while True:
-                src_socket, src_address = self.proxy.accept()
-                if self.verbose:
-                    print(f'Connection on {self.proxy_port} from {src_address}')
+        try:
+            with self.proxy:
+                while True:
+                    src_socket, src_address = self.proxy.accept()
+                    if self.verbose:
+                        print(f'Connection on {self.proxy_port} from {src_address}')
 
-                dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                dest_socket.connect((self.res.resolve(self.target_domain)[0].address, 443))
-                ssock = self.context.wrap_socket(dest_socket, server_hostname=self.target_domain)
+                    dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    dest_socket.connect((self.res.resolve(self.target_domain)[0].address, 443))
+                    ssock = self.context.wrap_socket(dest_socket, server_hostname=self.target_domain)
 
-                client_handler = threading.Thread(target=forward_data, args=(src_socket, ssock, False, self.quiet, self.verbose, self.target_domain))
-                client_handler.start()
-
+                    client_handler = threading.Thread(target=forward_data, args=(src_socket, ssock, False, self.quiet, self.verbose, self.target_domain))
+                    client_handler.start()
+        except socket.error as e:
+            print(f"{Colors.FAIL}{e}{Colors.END}")
+            print(f"Restarting proxy {self.proxy_port}")
+            self.proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.proxy.bind(('127.0.0.1', self.proxy_port))
+            self.proxy.listen(100)
+            self.handle_new_connections()
 
 def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_proxy: bool, quiet: bool, verbose: bool, domain: str = ""):
     with src_socket, dest_socket:

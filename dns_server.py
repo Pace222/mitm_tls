@@ -1,24 +1,24 @@
 import socket
-from typing import Dict
+from subprocess import check_call, DEVNULL, STDOUT
 
 from dnslib import DNSRecord, DNSHeader, QTYPE, RR, A
 
 import proxy
+import translating_server
 from utils import Startable, Colors
 
 
 class DNSServer(Startable):
-    def __init__(self, response_ip: str, quiet: bool, verbose: bool):
+    def __init__(self, response_ip: str, translator: translating_server.TranslatingServer, quiet: bool, verbose: bool):
         super().__init__(self.handle_requests)
         self.response_ip = response_ip
         self.dns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.dns_socket.bind(("0.0.0.0", 53))
 
-        self.domains_to_ports: Dict[str, int] = {}
-        self.client_ips_to_domains: Dict[str, str] = {}
-
         self.quiet = quiet
         self.verbose = verbose
+
+        self.translator = translator
 
     def handle_requests(self):
         if self.verbose:
@@ -27,18 +27,21 @@ class DNSServer(Startable):
             while True:
                 data, addr = self.dns_socket.recvfrom(1024)
 
-                if self.verbose:
-                    print(f"[{Colors.CYAN}*{Colors.END}] Received {Colors.GREEN}DNS{Colors.END} request from {addr}")
                 dns_request = DNSRecord.parse(data)
 
                 if dns_request.q.qtype == QTYPE.A or dns_request.q.qtype == QTYPE.AAAA:
-                    target_domain = str(dns_request.q.qname)
-                    self.client_ips_to_domains[addr[0]] = target_domain
+                    target_domain = str(dns_request.q.qname)[:-1]
+                    if self.verbose:
+                        print(f"[{Colors.CYAN}*{Colors.END}] Received {Colors.GREEN}DNS{Colors.END} request from {addr} for {Colors.GREEN}{target_domain}{Colors.END}")
 
-                    if target_domain not in self.domains_to_ports:
-                        # TODO: generate certificate
+                    if target_domain not in self.translator.domains_to_ports:
+                        org = '.'.join(target_domain.split('.')[-2:-1]).capitalize()
+                        check_call(['./gen_cert.sh', target_domain, org], stdout=DEVNULL, stderr=STDOUT)
+
+                        self.translator.domains_to_certs[target_domain] = (f'./certs/{target_domain}_chain.pem', f'./certs/{target_domain}.key')
+
                         new_proxy = proxy.Proxy(target_domain, self.quiet, self.verbose)
-                        self.domains_to_ports[target_domain] = new_proxy.proxy_port
+                        self.translator.domains_to_ports[target_domain] = new_proxy.proxy_port
                         new_proxy.start()
 
                     dns_response = DNSRecord(

@@ -1,4 +1,6 @@
+import errno
 import socket
+import ssl
 import threading
 import time
 
@@ -14,32 +16,41 @@ class Proxy(Startable):
         self.res.cache = resolver.Cache()
         self.res.nameservers = ['8.8.8.8']  # TODO: remove after local testing
 
-        proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        proxy.bind(('127.0.0.1', 0))
-        proxy.listen(100)
-
+        self.proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.proxy.bind(('127.0.0.1', 0))
+        self.proxy.listen(100)
+        self.proxy_port = self.proxy.getsockname()[1]
         self.target_domain = target_domain
-        self.proxy = proxy
-        self.proxy_port = proxy.getsockname()[1]
 
         self.quiet = quiet
         self.verbose = verbose
+
+        self.context = ssl.create_default_context()
 
     def handle_new_connections(self):
         if self.verbose:
             print(f'[{Colors.CYAN}*{Colors.END}] {Colors.CYAN}Proxy started{Colors.END} for {Colors.GREEN}{self.target_domain}{Colors.END} listening on port {self.proxy_port}...')
 
-        with self.proxy:
-            while True:
-                src_socket, src_address = self.proxy.accept()
-                if self.verbose:
-                    print(f'Connection on {self.proxy_port} from {src_address}')
+        try:
+            with self.proxy:
+                while True:
+                    src_socket, src_address = self.proxy.accept()
+                    if self.verbose:
+                        print(f'Connection on {self.proxy_port} from {src_address}')
 
-                dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                dest_socket.connect((self.res.resolve(self.target_domain)[0].address, 80))
+                    dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    dest_socket.connect((self.res.resolve(self.target_domain)[0].address, 443))
+                    ssock = self.context.wrap_socket(dest_socket, server_hostname=self.target_domain)
 
-                client_handler = threading.Thread(target=forward_data, args=(src_socket, dest_socket, False, self.quiet, self.verbose, self.target_domain))
-                client_handler.start()
+                    client_handler = threading.Thread(target=forward_data, args=(src_socket, ssock, False, self.quiet, self.verbose, self.target_domain))
+                    client_handler.start()
+        except socket.error as e:
+            print(f"{Colors.FAIL}{e}{Colors.END}")
+            print(f"Restarting proxy {self.proxy_port}")
+            self.proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.proxy.bind(('127.0.0.1', self.proxy_port))
+            self.proxy.listen(100)
+            self.handle_new_connections()
 
 def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_proxy: bool, quiet: bool, verbose: bool, domain: str = ""):
     with src_socket, dest_socket:
@@ -61,7 +72,7 @@ def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_pro
             try:
                 while True:
                     try:
-                        data = src_socket.recv(1024)
+                        data = src_socket.recv(4096)
                         if len(data) > 0:
                             st = time.time()
 
@@ -71,12 +82,12 @@ def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_pro
 
                             dest_socket.send(data)
                         else:
-                            if time.time() - st > 1:
+                            if time.time() - st > 5:
                                 timeout = True
                             break
                     except socket.error as e:
-                        if e.errno == 11:
-                            if time.time() - st > 1:
+                        if e.errno == errno.EAGAIN or e.errno == errno.ENOENT:
+                            if time.time() - st > 5:
                                 timeout = True
                             break
                         raise e
@@ -89,6 +100,7 @@ def forward_data(src_socket: socket.socket, dest_socket: socket.socket, http_pro
 
             except socket.error as e:
                 print(f"{Colors.FAIL}{e}{Colors.END}")
+                print(f"{e.errno}")
                 break
 
         if not quiet:

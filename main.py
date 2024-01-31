@@ -1,7 +1,7 @@
 import sys
 
 import dns_server
-import translating_server
+import proxy
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
@@ -12,11 +12,11 @@ if __name__ == '__main__':
     quiet = False
     verbose = True
 
-    trans_serv = translating_server.TranslatingServer(443, quiet, verbose)
-    dns_serv = dns_server.DNSServer(sys.argv[1], trans_serv, quiet, verbose)
+    proxy_serv = proxy.Proxy(443, quiet, verbose)
+    dns_serv = dns_server.DNSServer(sys.argv[1], proxy_serv, quiet, verbose)
 
-    trans_serv.start()
+    proxy_serv.start()
     dns_serv.start()
 
-    trans_serv.join()
+    proxy_serv.join()
     dns_serv.join()

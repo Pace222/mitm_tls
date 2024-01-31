@@ -3,12 +3,12 @@ from subprocess import check_call, DEVNULL, STDOUT
 
 from dnslib import DNSRecord, DNSHeader, QTYPE, RR, A
 
-import translating_server
+import proxy
 from utils import Startable, Colors
 
 
 class DNSServer(Startable):
-    def __init__(self, response_ip: str, translator: translating_server.TranslatingServer, quiet: bool, verbose: bool):
+    def __init__(self, response_ip: str, proxy_serv: proxy.Proxy, quiet: bool, verbose: bool):
         super().__init__(self.handle_requests)
         self.response_ip = response_ip
         self.dns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -17,7 +17,7 @@ class DNSServer(Startable):
         self.quiet = quiet
         self.verbose = verbose
 
-        self.translator = translator
+        self.proxy_serv = proxy_serv
 
     def handle_requests(self):
         if self.verbose:
@@ -33,11 +33,11 @@ class DNSServer(Startable):
                     if self.verbose:
                         print(f"[{Colors.CYAN}*{Colors.END}] Received {Colors.GREEN}DNS{Colors.END} request from {addr} for {Colors.GREEN}{target_domain}{Colors.END}")
 
-                    if target_domain not in self.translator.domains_to_certs:
+                    if target_domain not in self.proxy_serv.domains_to_certs:
                         org = '.'.join(target_domain.split('.')[-2:-1]).capitalize()
                         check_call(['./gen_cert.sh', target_domain, org], stdout=DEVNULL, stderr=STDOUT)
 
-                        self.translator.domains_to_certs[target_domain] = (f'./certs/{target_domain}_chain.pem', f'./certs/{target_domain}.key')
+                        self.proxy_serv.domains_to_certs[target_domain] = (f'./certs/{target_domain}_chain.pem', f'./certs/{target_domain}.key')
 
                     dns_response = DNSRecord(
                         DNSHeader(id=dns_request.header.id, qr=1, aa=1, ra=1),

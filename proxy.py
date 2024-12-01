@@ -1,7 +1,5 @@
-import errno
 import socket
 import threading
-import time
 from typing import Tuple, Dict
 
 from utils import Startable, Colors
@@ -56,8 +54,7 @@ class Proxy(Startable):
                     if self.verbose:
                         print(f'Connection on port {self.port} from {client_address}')
 
-                    client_handler = threading.Thread(target=self.handle_client, args=(client_socket,))
-                    client_handler.start()
+                    self.handle_client(client_socket)
         except socket.error as e:
             print(f"{Colors.FAIL}{e}{Colors.END}")
             print(f"Restarting relay {self.port}")
@@ -75,58 +72,42 @@ class Proxy(Startable):
             dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             dest_socket.connect((self.res.resolve(domain)[0].address, 443))
             dest_socket = self.client_context.wrap_socket(dest_socket, server_hostname=domain)
+
+            s = threading.Thread(target=self.forward, args=(client_socket, dest_socket, domain, True))
+            r = threading.Thread(target=self.forward, args=(dest_socket, client_socket, domain, False))
+
+            s.start()
+            r.start()
         elif self.port == 80:
             # TODO: find a way to get the correct port when plain HTTP
             raise "HTTP port not yet implemented"
         else:
             raise "Proxy port not yet implemented"
 
-        with client_socket, dest_socket:
-            client_socket.setblocking(False)
-            dest_socket.setblocking(False)
+    def forward(self, src_socket: socket.socket, dest_socket: socket.socket, domain: str, direction: bool):
+        with src_socket, dest_socket:
+            src = src_socket.getpeername()
 
-            src = client_socket.getpeername()
-            if not self.quiet:
+            if not self.quiet and direction:
                 print(f"{Colors.BOLD}{Colors.GREEN}************** {src} >>> {domain} opened **************{Colors.END}\n")
 
-            st = time.time()
-            timeout = False
-            color = Colors.GREEN
-            arrows = ">>>"
-            while not timeout:
+            while True:
                 try:
-                    while True:
-                        try:
-                            data = client_socket.recv(4096)
-                            if len(data) > 0:
-                                st = time.time()
+                    data = src_socket.recv(4096)
+                    if len(data) == 0:
+                        break
 
-                                if not self.quiet:
-                                    print(f"{color}{arrows} [{domain}]: {Colors.END}", end="")
-                                    print(data)
+                    if not self.quiet:
+                        if direction:
+                            print(f"{Colors.GREEN}>>> [{domain}]: {Colors.END}", end="")
+                        else:
+                            print(f"{Colors.BLUE}<<< [{domain}]: {Colors.END}", end="")
+                        print(data)
 
-                                dest_socket.send(data)
-                            else:
-                                if time.time() - st > 5:
-                                    timeout = True
-                                break
-                        except socket.error as e:
-                            if e.errno == errno.EAGAIN or e.errno == errno.ENOENT:
-                                if time.time() - st > 5:
-                                    timeout = True
-                                break
-                            raise e
-
-                    tmp = client_socket
-                    client_socket = dest_socket
-                    dest_socket = tmp
-                    color = Colors.GREEN if color == Colors.BLUE else Colors.BLUE
-                    arrows = "<<<" if arrows == ">>>" else ">>>"
-
-                except socket.error as e:
+                    dest_socket.send(data)
+                except Exception as e:
                     print(f"{Colors.FAIL}{e}{Colors.END}")
-                    print(f"{e.errno}")
                     break
 
-            if not self.quiet:
+            if not self.quiet and direction:
                 print(f"{Colors.BOLD}{Colors.FAIL}************** {src} >>> {domain} closed **************{Colors.END}\n")
